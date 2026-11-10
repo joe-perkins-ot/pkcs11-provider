@@ -4,6 +4,8 @@
 
 #include "provider.h"
 #include "decoder.h"
+#include "interface.h"
+#include "slot.h"
 #include <pthread.h>
 #include <string.h>
 
@@ -210,6 +212,7 @@ done:
  * p11prov_ctx_status() re-initializes the module, and re-fetching any object
  * re-finds it by CKA_ID/CKA_LABEL.
  */
+void p11prov_reset(void);
 void p11prov_reset(void)
 {
     int err;
