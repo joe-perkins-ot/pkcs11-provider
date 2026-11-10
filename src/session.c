@@ -338,6 +338,18 @@ static CK_RV session_check(P11PROV_SESSION *session, CK_FLAGS flags)
     P11PROV_debug("Checking session %lu", session->session);
     ret = p11prov_GetSessionInfo(session->provctx, session->session,
                                  &session_info);
+    if (ret == CKR_SESSION_HANDLE_INVALID) {
+        /* The module was torn down underneath us (e.g. another component in
+         * the process called C_Finalize/C_Initialize on the shared module).
+         * Arm the lazy re-init machinery (same as the fork handler), so the
+         * next operation re-initializes the module and invalidates all cached
+         * sessions and object handles. This operation still fails, but the
+         * following ones recover. */
+        P11PROV_debug("Stale module detected (session %lu handle invalid), "
+                      "arming re-init",
+                      session->session);
+        p11prov_ctx_stale_detected(session->provctx);
+    }
     if (ret == CKR_OK) {
         session->state = session_info.state;
         if (flags == (session_info.flags & flags)) {
@@ -1098,8 +1110,12 @@ CK_RV p11prov_get_session(P11PROV_CTX *provctx, CK_SLOT_ID *slotid,
     ret = fetch_session(pool, flags, false, &session);
     if (ret == CKR_OK) {
         ret = session_check(session, flags);
-        if (ret == CKR_SESSION_CLOSED) {
-            /* this is ok */
+        if (ret == CKR_SESSION_CLOSED
+            || ret == CKR_SESSION_HANDLE_INVALID) {
+            /* the pooled session died (module closed/re-finalized under us);
+             * session_check has already invalidated the handle, and
+             * stale-module detection has armed the re-init machinery, so
+             * fall through and open a fresh session */
             ret = CKR_OK;
         }
         if (ret != CKR_OK) {

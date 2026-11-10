@@ -138,7 +138,10 @@ static void fork_child(void)
 
     for (int i = 0; i < ctx_pool.num; i++) {
         if (ctx_pool.contexts[i]->status == P11PROV_INITIALIZED) {
-            /* can't re-init in the fork handler, mark it */
+            /* can't re-init in the fork handler, mark it.
+             * (the ctx_pool wrlock is already held here, so the
+             * arming is done inline rather than via
+             * p11prov_ctx_stale_detected()) */
             ctx_pool.contexts[i]->status = P11PROV_NEEDS_REINIT;
             p11prov_module_mark_reinit(ctx_pool.contexts[i]->module);
             p11prov_slot_fork_reset(ctx_pool.contexts[i]->slots);
@@ -204,6 +207,44 @@ done:
 }
 
 /*
+ * Arm the lazy re-initialization machinery for a single context whose PKCS#11
+ * module has been disturbed underneath us (e.g. another component in the same
+ * process calling C_Finalize on the shared module). Called from the fork
+ * handler and from session.c when a pooled session is found dead
+ * (CKR_SESSION_HANDLE_INVALID from C_GetSessionInfo). The next operation
+ * through p11prov_ctx_status() re-initializes the module, and re-fetching any
+ * object re-finds it by CKA_ID/CKA_LABEL.
+ */
+void p11prov_ctx_stale_detected(P11PROV_CTX *ctx)
+{
+    int err;
+
+    err = pthread_rwlock_wrlock(&ctx_pool.rwlock);
+    if (err != 0) {
+        err = errno;
+        P11PROV_debug("Failed to get ctx pool lock (errno:%d)", err);
+        return;
+    }
+
+    if (ctx->status == P11PROV_INITIALIZED) {
+        ctx->status = P11PROV_NEEDS_REINIT;
+        p11prov_module_mark_reinit(ctx->module);
+        p11prov_slot_fork_reset(ctx->slots);
+    }
+
+    err = pthread_rwlock_unlock(&ctx_pool.rwlock);
+    if (err != 0) {
+        err = errno;
+        P11PROV_debug("Failed to release ctx pool lock (errno:%d)", err);
+    }
+}
+
+/*
+ * NOTE: kept for potential reuse; nothing calls it anymore — stale-module
+ * detection now happens automatically in session.c (session_check), which
+ * arms the same machinery via p11prov_ctx_stale_detected(). Still exported
+ * (provider.map) as an explicit manual valve for embedders.
+ *
  * Force a full reset of all cached PKCS#11 state (sessions, object handles,
  * module initialization). Intended to be called by embedders after something
  * has disturbed the PKCS#11 module underneath us (e.g. another component in
