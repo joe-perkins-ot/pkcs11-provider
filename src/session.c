@@ -904,6 +904,13 @@ static CK_RV slot_login(P11PROV_SLOT *slot, P11PROV_URI *uri,
 
     /* we acquired the session, check that it is ok */
     ret = session_check(session, session->flags);
+    if (ret == CKR_SESSION_HANDLE_INVALID) {
+        /* The session died with the module (e.g. another component in the
+         * process called C_Finalize/C_Initialize). session_check has already
+         * invalidated the handle, so fall through and reopen a fresh
+         * session just like the CKR_SESSION_CLOSED case. */
+        ret = CKR_SESSION_CLOSED;
+    }
     if (ret != CKR_OK && ret != CKR_SESSION_CLOSED) {
         goto done;
     }

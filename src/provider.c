@@ -201,6 +201,41 @@ done:
     return;
 }
 
+/*
+ * Force a full reset of all cached PKCS#11 state (sessions, object handles,
+ * module initialization). Intended to be called by embedders after something
+ * has disturbed the PKCS#11 module underneath us (e.g. another component in
+ * the same process calling C_Finalize on the shared module). Uses the same
+ * machinery as the fork handler: the next operation through
+ * p11prov_ctx_status() re-initializes the module, and re-fetching any object
+ * re-finds it by CKA_ID/CKA_LABEL.
+ */
+void p11prov_reset(void)
+{
+    int err;
+
+    err = pthread_rwlock_wrlock(&ctx_pool.rwlock);
+    if (err != 0) {
+        err = errno;
+        P11PROV_debug("Failed to get slots lock (errno:%d)", err);
+        return;
+    }
+
+    for (int i = 0; i < ctx_pool.num; i++) {
+        if (ctx_pool.contexts[i]->status == P11PROV_INITIALIZED) {
+            ctx_pool.contexts[i]->status = P11PROV_NEEDS_REINIT;
+            p11prov_module_mark_reinit(ctx_pool.contexts[i]->module);
+            p11prov_slot_fork_reset(ctx_pool.contexts[i]->slots);
+        }
+    }
+
+    err = pthread_rwlock_unlock(&ctx_pool.rwlock);
+    if (err != 0) {
+        err = errno;
+        P11PROV_debug("Failed to release context pool (errno:%d)", err);
+    }
+}
+
 static void context_rm_pool(struct p11prov_ctx *ctx)
 {
     int found = false;
